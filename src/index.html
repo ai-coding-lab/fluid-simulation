@@ -1,0 +1,618 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fluid Simulation</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #0a0a0a;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        }
+
+        #canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        .controls {
+            position: fixed;
+            top: 16px;
+            left: 16px;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(8px);
+            padding: 16px;
+            border-radius: 12px;
+            color: #fff;
+            z-index: 100;
+            min-width: 200px;
+            transition: opacity 0.3s;
+        }
+
+        .controls:hover {
+            opacity: 1 !important;
+        }
+
+        .controls.faded {
+            opacity: 0.3;
+        }
+
+        .controls h3 {
+            font-size: 14px;
+            margin-bottom: 12px;
+            color: #888;
+            font-weight: 500;
+        }
+
+        .control-group {
+            margin-bottom: 12px;
+        }
+
+        .control-group label {
+            display: block;
+            font-size: 12px;
+            margin-bottom: 6px;
+            color: #aaa;
+        }
+
+        .control-group input[type="range"] {
+            width: 100%;
+            height: 4px;
+            background: #333;
+            border-radius: 2px;
+            outline: none;
+            -webkit-appearance: none;
+            appearance: none;
+        }
+
+        .control-group input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 14px;
+            height: 14px;
+            background: #fff;
+            border-radius: 50%;
+            cursor: pointer;
+        }
+
+        .color-palette {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .color-option {
+            width: 28px;
+            height: 28px;
+            border-radius: 6px;
+            cursor: pointer;
+            border: 2px solid transparent;
+            transition: border-color 0.2s, transform 0.2s;
+        }
+
+        .color-option:hover {
+            transform: scale(1.1);
+        }
+
+        .color-option.active {
+            border-color: #fff;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 8px 16px;
+            background: rgba(255, 255, 255, 0.1);
+            border: none;
+            border-radius: 6px;
+            color: #fff;
+            font-size: 12px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .hint {
+            position: fixed;
+            bottom: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(255, 255, 255, 0.4);
+            font-size: 12px;
+            pointer-events: none;
+            transition: opacity 0.5s;
+        }
+
+        @media (max-width: 480px) {
+            .controls {
+                top: auto;
+                bottom: 16px;
+                left: 16px;
+                right: 16px;
+                min-width: auto;
+            }
+
+            .hint {
+                bottom: auto;
+                top: 16px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+
+    <div class="controls" id="controls">
+        <h3>FLUID CONTROLS</h3>
+
+        <div class="control-group">
+            <label>Color Palette</label>
+            <div class="color-palette" id="colorPalette"></div>
+        </div>
+
+        <div class="control-group">
+            <label>Viscosity: <span id="viscosityValue">0.0001</span></label>
+            <input type="range" id="viscosity" min="-5" max="-2" step="0.1" value="-4">
+        </div>
+
+        <div class="control-group">
+            <label>Diffusion: <span id="diffusionValue">0.0001</span></label>
+            <input type="range" id="diffusion" min="-5" max="-2" step="0.1" value="-4">
+        </div>
+
+        <div class="control-group">
+            <button class="btn" id="resetBtn">Reset</button>
+        </div>
+    </div>
+
+    <div class="hint" id="hint">Drag to create flow</div>
+
+    <script>
+        // Color palettes
+        const PALETTES = [
+            { name: 'Ocean', colors: [[0, 50, 100], [0, 150, 200], [100, 200, 255]] },
+            { name: 'Fire', colors: [[100, 0, 0], [255, 100, 0], [255, 255, 100]] },
+            { name: 'Aurora', colors: [[20, 80, 50], [50, 200, 100], [150, 255, 200]] },
+            { name: 'Sunset', colors: [[100, 20, 60], [255, 100, 50], [255, 200, 100]] },
+            { name: 'Neon', colors: [[80, 0, 120], [200, 0, 200], [100, 200, 255]] },
+            { name: 'Grayscale', colors: [[30, 30, 30], [128, 128, 128], [240, 240, 240]] }
+        ];
+
+        let currentPalette = 0;
+
+        // Canvas setup
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+
+        // Simulation parameters
+        const SCALE = 4; // Each cell is 4x4 pixels
+        let N; // Grid size
+        let size;
+
+        // Arrays for simulation
+        let density, densityPrev;
+        let velocityX, velocityY;
+        let velocityXPrev, velocityYPrev;
+
+        // Settings
+        let viscosity = 0.0001;
+        let diffusion = 0.0001;
+        const iterations = 4;
+        const dt = 0.2;
+
+        // Mouse state
+        let mouseDown = false;
+        let lastMouseX = 0;
+        let lastMouseY = 0;
+        let interacted = false;
+
+        // Initialize
+        function init() {
+            resize();
+            setupControls();
+            requestAnimationFrame(loop);
+        }
+
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+
+            N = Math.floor(Math.min(canvas.width, canvas.height) / SCALE);
+            size = (N + 2) * (N + 2);
+
+            // Initialize arrays
+            density = new Float32Array(size);
+            densityPrev = new Float32Array(size);
+            velocityX = new Float32Array(size);
+            velocityY = new Float32Array(size);
+            velocityXPrev = new Float32Array(size);
+            velocityYPrev = new Float32Array(size);
+        }
+
+        function IX(x, y) {
+            x = Math.max(0, Math.min(N + 1, x));
+            y = Math.max(0, Math.min(N + 1, y));
+            return x + y * (N + 2);
+        }
+
+        // Add source to field
+        function addSource(field, source) {
+            for (let i = 0; i < size; i++) {
+                field[i] += dt * source[i];
+            }
+        }
+
+        // Set boundary conditions
+        function setBounds(b, field) {
+            for (let i = 1; i <= N; i++) {
+                field[IX(0, i)] = b === 1 ? -field[IX(1, i)] : field[IX(1, i)];
+                field[IX(N + 1, i)] = b === 1 ? -field[IX(N, i)] : field[IX(N, i)];
+                field[IX(i, 0)] = b === 2 ? -field[IX(i, 1)] : field[IX(i, 1)];
+                field[IX(i, N + 1)] = b === 2 ? -field[IX(i, N)] : field[IX(i, N)];
+            }
+
+            field[IX(0, 0)] = 0.5 * (field[IX(1, 0)] + field[IX(0, 1)]);
+            field[IX(0, N + 1)] = 0.5 * (field[IX(1, N + 1)] + field[IX(0, N)]);
+            field[IX(N + 1, 0)] = 0.5 * (field[IX(N, 0)] + field[IX(N + 1, 1)]);
+            field[IX(N + 1, N + 1)] = 0.5 * (field[IX(N, N + 1)] + field[IX(N + 1, N)]);
+        }
+
+        // Linear solve using Gauss-Seidel relaxation
+        function linearSolve(b, field, fieldPrev, a, c) {
+            const cRecip = 1.0 / c;
+            for (let k = 0; k < iterations; k++) {
+                for (let j = 1; j <= N; j++) {
+                    for (let i = 1; i <= N; i++) {
+                        field[IX(i, j)] = (fieldPrev[IX(i, j)] + a * (
+                            field[IX(i + 1, j)] +
+                            field[IX(i - 1, j)] +
+                            field[IX(i, j + 1)] +
+                            field[IX(i, j - 1)]
+                        )) * cRecip;
+                    }
+                }
+                setBounds(b, field);
+            }
+        }
+
+        // Diffusion step
+        function diffuse(b, field, fieldPrev, diff) {
+            const a = dt * diff * N * N;
+            linearSolve(b, field, fieldPrev, a, 1 + 4 * a);
+        }
+
+        // Advection step (semi-Lagrangian)
+        function advect(b, field, fieldPrev, velX, velY) {
+            const dt0 = dt * N;
+
+            for (let j = 1; j <= N; j++) {
+                for (let i = 1; i <= N; i++) {
+                    let x = i - dt0 * velX[IX(i, j)];
+                    let y = j - dt0 * velY[IX(i, j)];
+
+                    if (x < 0.5) x = 0.5;
+                    if (x > N + 0.5) x = N + 0.5;
+                    const i0 = Math.floor(x);
+                    const i1 = i0 + 1;
+
+                    if (y < 0.5) y = 0.5;
+                    if (y > N + 0.5) y = N + 0.5;
+                    const j0 = Math.floor(y);
+                    const j1 = j0 + 1;
+
+                    const s1 = x - i0;
+                    const s0 = 1 - s1;
+                    const t1 = y - j0;
+                    const t0 = 1 - t1;
+
+                    field[IX(i, j)] = s0 * (t0 * fieldPrev[IX(i0, j0)] + t1 * fieldPrev[IX(i0, j1)]) +
+                                      s1 * (t0 * fieldPrev[IX(i1, j0)] + t1 * fieldPrev[IX(i1, j1)]);
+                }
+            }
+            setBounds(b, field);
+        }
+
+        // Projection step (enforce incompressibility)
+        function project(velX, velY, p, div) {
+            const h = 1.0 / N;
+
+            for (let j = 1; j <= N; j++) {
+                for (let i = 1; i <= N; i++) {
+                    div[IX(i, j)] = -0.5 * h * (
+                        velX[IX(i + 1, j)] - velX[IX(i - 1, j)] +
+                        velY[IX(i, j + 1)] - velY[IX(i, j - 1)]
+                    );
+                    p[IX(i, j)] = 0;
+                }
+            }
+            setBounds(0, div);
+            setBounds(0, p);
+
+            linearSolve(0, p, div, 1, 4);
+
+            for (let j = 1; j <= N; j++) {
+                for (let i = 1; i <= N; i++) {
+                    velX[IX(i, j)] -= 0.5 * (p[IX(i + 1, j)] - p[IX(i - 1, j)]) * N;
+                    velY[IX(i, j)] -= 0.5 * (p[IX(i, j + 1)] - p[IX(i, j - 1)]) * N;
+                }
+            }
+            setBounds(1, velX);
+            setBounds(2, velY);
+        }
+
+        // Velocity step
+        function velocityStep() {
+            addSource(velocityX, velocityXPrev);
+            addSource(velocityY, velocityYPrev);
+
+            [velocityXPrev, velocityX] = [velocityX, velocityXPrev];
+            diffuse(1, velocityX, velocityXPrev, viscosity);
+
+            [velocityYPrev, velocityY] = [velocityY, velocityYPrev];
+            diffuse(2, velocityY, velocityYPrev, viscosity);
+
+            project(velocityX, velocityY, velocityXPrev, velocityYPrev);
+
+            [velocityXPrev, velocityX] = [velocityX, velocityXPrev];
+            [velocityYPrev, velocityY] = [velocityY, velocityYPrev];
+
+            advect(1, velocityX, velocityXPrev, velocityXPrev, velocityYPrev);
+            advect(2, velocityY, velocityYPrev, velocityXPrev, velocityYPrev);
+
+            project(velocityX, velocityY, velocityXPrev, velocityYPrev);
+        }
+
+        // Density step
+        function densityStep() {
+            addSource(density, densityPrev);
+
+            [densityPrev, density] = [density, densityPrev];
+            diffuse(0, density, densityPrev, diffusion);
+
+            [densityPrev, density] = [density, densityPrev];
+            advect(0, density, densityPrev, velocityX, velocityY);
+        }
+
+        // Render
+        function render() {
+            const imageData = ctx.createImageData(canvas.width, canvas.height);
+            const data = imageData.data;
+            const palette = PALETTES[currentPalette].colors;
+
+            const cellWidth = canvas.width / N;
+            const cellHeight = canvas.height / N;
+
+            for (let j = 1; j <= N; j++) {
+                for (let i = 1; i <= N; i++) {
+                    const d = Math.min(1, density[IX(i, j)]);
+
+                    // Interpolate color based on density
+                    let r, g, b;
+                    if (d < 0.5) {
+                        const t = d * 2;
+                        r = palette[0][0] + (palette[1][0] - palette[0][0]) * t;
+                        g = palette[0][1] + (palette[1][1] - palette[0][1]) * t;
+                        b = palette[0][2] + (palette[1][2] - palette[0][2]) * t;
+                    } else {
+                        const t = (d - 0.5) * 2;
+                        r = palette[1][0] + (palette[2][0] - palette[1][0]) * t;
+                        g = palette[1][1] + (palette[2][1] - palette[1][1]) * t;
+                        b = palette[1][2] + (palette[2][2] - palette[1][2]) * t;
+                    }
+
+                    // Fill pixels for this cell
+                    const startX = Math.floor((i - 1) * cellWidth);
+                    const endX = Math.floor(i * cellWidth);
+                    const startY = Math.floor((j - 1) * cellHeight);
+                    const endY = Math.floor(j * cellHeight);
+
+                    for (let py = startY; py < endY; py++) {
+                        for (let px = startX; px < endX; px++) {
+                            const idx = (py * canvas.width + px) * 4;
+                            data[idx] = r;
+                            data[idx + 1] = g;
+                            data[idx + 2] = b;
+                            data[idx + 3] = 255;
+                        }
+                    }
+                }
+            }
+
+            ctx.putImageData(imageData, 0, 0);
+        }
+
+        // Clear previous sources
+        function clearPrevious() {
+            densityPrev.fill(0);
+            velocityXPrev.fill(0);
+            velocityYPrev.fill(0);
+        }
+
+        // Main loop
+        function loop() {
+            velocityStep();
+            densityStep();
+            clearPrevious();
+            render();
+            requestAnimationFrame(loop);
+        }
+
+        // Mouse/touch handlers
+        function getPosition(e) {
+            if (e.touches) {
+                return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+            }
+            return { x: e.clientX, y: e.clientY };
+        }
+
+        function addInteraction(x, y, dx, dy) {
+            const cellX = Math.floor(x / canvas.width * N) + 1;
+            const cellY = Math.floor(y / canvas.height * N) + 1;
+
+            if (cellX < 1 || cellX > N || cellY < 1 || cellY > N) return;
+
+            // Add density
+            const radius = 3;
+            for (let i = -radius; i <= radius; i++) {
+                for (let j = -radius; j <= radius; j++) {
+                    const cx = cellX + i;
+                    const cy = cellY + j;
+                    if (cx >= 1 && cx <= N && cy >= 1 && cy <= N) {
+                        const dist = Math.sqrt(i * i + j * j);
+                        const falloff = Math.max(0, 1 - dist / radius);
+                        densityPrev[IX(cx, cy)] += 50 * falloff;
+                    }
+                }
+            }
+
+            // Add velocity based on mouse movement
+            const force = 5;
+            velocityXPrev[IX(cellX, cellY)] += dx * force;
+            velocityYPrev[IX(cellX, cellY)] += dy * force;
+
+            // Spread velocity to neighbors
+            for (let i = -1; i <= 1; i++) {
+                for (let j = -1; j <= 1; j++) {
+                    const cx = cellX + i;
+                    const cy = cellY + j;
+                    if (cx >= 1 && cx <= N && cy >= 1 && cy <= N) {
+                        velocityXPrev[IX(cx, cy)] += dx * force * 0.5;
+                        velocityYPrev[IX(cx, cy)] += dy * force * 0.5;
+                    }
+                }
+            }
+        }
+
+        canvas.addEventListener('mousedown', (e) => {
+            mouseDown = true;
+            const pos = getPosition(e);
+            lastMouseX = pos.x;
+            lastMouseY = pos.y;
+            hideHint();
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (!mouseDown) return;
+            const pos = getPosition(e);
+            const dx = pos.x - lastMouseX;
+            const dy = pos.y - lastMouseY;
+            addInteraction(pos.x, pos.y, dx, dy);
+            lastMouseX = pos.x;
+            lastMouseY = pos.y;
+        });
+
+        canvas.addEventListener('mouseup', () => mouseDown = false);
+        canvas.addEventListener('mouseleave', () => mouseDown = false);
+
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            mouseDown = true;
+            const pos = getPosition(e);
+            lastMouseX = pos.x;
+            lastMouseY = pos.y;
+            hideHint();
+        });
+
+        canvas.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            if (!mouseDown) return;
+            const pos = getPosition(e);
+            const dx = pos.x - lastMouseX;
+            const dy = pos.y - lastMouseY;
+            addInteraction(pos.x, pos.y, dx, dy);
+            lastMouseX = pos.x;
+            lastMouseY = pos.y;
+        });
+
+        canvas.addEventListener('touchend', () => mouseDown = false);
+
+        // Hide hint after interaction
+        function hideHint() {
+            if (!interacted) {
+                interacted = true;
+                document.getElementById('hint').style.opacity = '0';
+            }
+        }
+
+        // Setup controls
+        function setupControls() {
+            const paletteContainer = document.getElementById('colorPalette');
+
+            PALETTES.forEach((palette, index) => {
+                const btn = document.createElement('div');
+                btn.className = 'color-option' + (index === 0 ? ' active' : '');
+                btn.style.background = `linear-gradient(135deg, rgb(${palette.colors[0].join(',')}), rgb(${palette.colors[2].join(',')}))`;
+                btn.title = palette.name;
+                btn.addEventListener('click', () => {
+                    document.querySelectorAll('.color-option').forEach(el => el.classList.remove('active'));
+                    btn.classList.add('active');
+                    currentPalette = index;
+                });
+                paletteContainer.appendChild(btn);
+            });
+
+            // Viscosity slider
+            const viscositySlider = document.getElementById('viscosity');
+            const viscosityValue = document.getElementById('viscosityValue');
+            viscositySlider.addEventListener('input', () => {
+                viscosity = Math.pow(10, parseFloat(viscositySlider.value));
+                viscosityValue.textContent = viscosity.toFixed(5);
+            });
+
+            // Diffusion slider
+            const diffusionSlider = document.getElementById('diffusion');
+            const diffusionValue = document.getElementById('diffusionValue');
+            diffusionSlider.addEventListener('input', () => {
+                diffusion = Math.pow(10, parseFloat(diffusionSlider.value));
+                diffusionValue.textContent = diffusion.toFixed(5);
+            });
+
+            // Reset button
+            document.getElementById('resetBtn').addEventListener('click', () => {
+                density.fill(0);
+                densityPrev.fill(0);
+                velocityX.fill(0);
+                velocityY.fill(0);
+                velocityXPrev.fill(0);
+                velocityYPrev.fill(0);
+            });
+
+            // Fade controls after inactivity
+            let controlsTimeout;
+            const controls = document.getElementById('controls');
+
+            function resetControlsFade() {
+                controls.classList.remove('faded');
+                clearTimeout(controlsTimeout);
+                controlsTimeout = setTimeout(() => {
+                    controls.classList.add('faded');
+                }, 3000);
+            }
+
+            controls.addEventListener('mouseenter', () => {
+                clearTimeout(controlsTimeout);
+                controls.classList.remove('faded');
+            });
+
+            controls.addEventListener('mouseleave', resetControlsFade);
+            resetControlsFade();
+        }
+
+        // Handle resize
+        window.addEventListener('resize', resize);
+
+        // Start
+        init();
+    </script>
+</body>
+</html>
